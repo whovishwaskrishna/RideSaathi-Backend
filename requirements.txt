@@ -10,3 +10,5 @@ redis
 stripe
 alembic
 email-validator
+python-jose[cryptography]
+python-multipart

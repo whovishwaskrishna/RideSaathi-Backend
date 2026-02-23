@@ -1,1 +1,6 @@
 from .user import User
+from .driver import Driver
+from .driver_document import DriverDocument
+from .city import City
+from .route import Route
+from .route_stop import RouteStop
