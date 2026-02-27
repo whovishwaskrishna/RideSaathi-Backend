@@ -6,3 +6,4 @@ from .route import Route
 from .route_stop import RouteStop
 from .booking import Booking
 from .reviews import Review
+from .route_live_location import RouteLiveLocation

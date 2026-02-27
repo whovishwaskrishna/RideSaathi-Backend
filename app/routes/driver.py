@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.db.database import get_db
@@ -9,6 +9,7 @@ from app.models.booking import Booking
 from app.models.user import User
 from app.models.driver_document import DriverDocument
 from app.core.dependencies import get_current_user, require_role
+from app.core.email_service import send_email
 
 router = APIRouter(prefix="/driver", tags=["Driver"])
 
@@ -50,19 +51,32 @@ def upload_document(document_type:str,document_url:str,db:Session= Depends(get_d
     return {"message": "Document upload successfully"}
 
 @router.put("/approve/{driver_id}")
-def approve_driver(driver_id:int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="Only admin can approve drivers")
-    
+def approve_driver(
+    driver_id:int, 
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(require_role("ADMIN"))
+):
     driver = db.query(Driver).filter(Driver.id == driver_id).first()
 
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
-        
+    
+    if driver.is_approved:
+        raise HTTPException(status_code=400, detail="Driver already approved")
+    
     driver.is_approved = True
     db.commit()
 
+    background_tasks.add_task(
+        send_email,
+        driver.user.email,
+        "Driver Account Approved",
+        f"Hi {driver.user.name},\n\nCongratulations! Your driver account has been approved.\nYou can now start creating rides."
+    )
+
     return {"message": "Driver approved successfully"}
+    
 
 @router.get("/earnings")
 def driver_earnings(
@@ -180,3 +194,5 @@ def driver_public_profile(
         "review_page": review_page,
         "review_total_pages": (total_review_records + review_limit - 1) // review_limit
     }
+
+

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import List
@@ -9,12 +9,19 @@ from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
 from app.core.security import hash_password, verify_password
 from app.core.jwt import create_access_token
+from app.core.email_service import send_email
 from app.core.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+ADMIN_EMAIL = "admin.ridesaathi@yopmail.com"
+
 @router.post("/register", response_model=UserResponse)
-def register(user:UserCreate, db: Session = Depends(get_db)):
+def register(
+    user:UserCreate, 
+    backend_tasks:BackgroundTasks, 
+    db: Session = Depends(get_db)
+):
 
     # check duplicate email
     existing_email = db.query(User).filter(User.email == user.email).first()
@@ -36,7 +43,34 @@ def register(user:UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
+    if new_user.role == "DRIVER":
+
+        #Email to Driver
+        backend_tasks.add_task(
+            send_email,
+            new_user.email,
+            "Driver Registration Received",
+            f"Hi {new_user.name},\n\nYour driver registration is under review.\nWe will notify you once approved."
+        )
+
+        # Email to Admin
+        backend_tasks.add_task(
+            send_email,
+            ADMIN_EMAIL,
+            "New Driver Registration",
+            f"New driver registerd:\n\nName: {new_user.name}\nEmail: {new_user.email}"
+        )
+
+    elif new_user.role == "CUSTOMER":
+        backend_tasks.add_task(
+            send_email,
+            new_user.email,
+            "New Driver Registration",
+            f"Hi {new_user.name},\n\nYour account has been created successfully."
+        )
+
     return new_user
+
 
 @router.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -51,6 +85,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "access_token":access_token, "token_type": "Bearer"
     }
 
+
 @router.get("/me")
 def read_me(current_user: User = Depends(get_current_user)):
     return {
@@ -60,9 +95,11 @@ def read_me(current_user: User = Depends(get_current_user)):
         "role": current_user.role
     }
 
+
 @router.get("/admin")
 def admin_only(current_user: User = Depends(require_role("ADMIN"))):
     return {"message": "Welcome Admin"}
+
 
 @router.get("/users", response_model=List[UserResponse])
 def get_users(db: Session= Depends(get_db)):

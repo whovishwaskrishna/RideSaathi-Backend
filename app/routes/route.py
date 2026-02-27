@@ -11,10 +11,14 @@ from app.models.user import User
 from app.models.reviews import Review
 from app.models.booking import Booking
 from app.core.dependencies import get_current_user, require_role
-from app.core.ws_manager import ConnectionManager
+from app.core.ws_manager import manage
 from app.core.jwt import verify_token
 from app.schemas.route import RouteCreate
 from app.services.route_completion import auto_complete_route
+from app.models.route_live_location import RouteLiveLocation
+from app.utils.geo import calculate_distance
+
+
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
 
@@ -323,21 +327,22 @@ def complete_route(
 
 # ws://localhost:8000/routes/ws/routes/1/driver?token=YOUR_JWT
 @router.websocket("/ws/routes/{route_id}/driver")
-async def dricer_tracking(websocket: WebSocket, route_id: int):
+async def driver_tracking(websocket: WebSocket, route_id: int):
 
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close()
         return
-     
+
     payload = verify_token(token)
     if not payload:
         await websocket.close()
         return
-     
+
     user_id = int(payload.get("sub"))
 
     db = SessionLocal()
+
     try:
         driver = db.query(Driver).filter(
             Driver.user_id == user_id
@@ -350,66 +355,164 @@ async def dricer_tracking(websocket: WebSocket, route_id: int):
         if not driver or not route or route.driver_id != driver.id:
             await websocket.close()
             return
-        
+
         if route.status != "STARTED":
             await websocket.close()
             return
-        
+
         await websocket.accept()
-        await ConnectionManager.connect(route_id, websocket)
+        await manage.connect_route(route_id, websocket)
+
+        avg_speed_kmph = 50
 
         while True:
             data = await websocket.receive_json()
 
-            await ConnectionManager.broadcast(route_id, {
-                "latitude": data["latitude"],
-                "longitude": data["longitude"]
+            lat = data["latitude"]
+            lon = data["longitude"]
+
+            location = RouteLiveLocation(
+                route_id=route.id,
+                latitude=lat,
+                longitude=lon
+            )
+            db.add(location)
+            db.commit()
+
+            # -------- STOP DETECTION --------
+            next_stop = db.query(RouteStop).filter(
+                RouteStop.route_id == route.id,
+                RouteStop.is_reached == False
+            ).order_by(RouteStop.stop_order).first()
+
+            if next_stop:
+                stop_city = db.query(City).filter(
+                    City.id == next_stop.city_id
+                ).first()
+
+                distance_to_stop = calculate_distance(
+                    lat, lon,
+                    stop_city.latitude,
+                    stop_city.longitude
+                )
+
+                if distance_to_stop < 0.5:
+                    next_stop.is_reached = True
+                    db.commit()
+
+                    await manage.broadcast_route(route.id, {
+                        "event": "STOP_REACHED",
+                        "city_id": stop_city.id,
+                        "city_name": stop_city.name
+                    })
+
+            # -------- PER PASSENGER ETA --------
+            confirmed_bookings = db.query(Booking).filter(
+                Booking.route_id == route.id,
+                Booking.status == "CONFIRMED"
+            ).all()
+
+            for booking in confirmed_bookings:
+
+                passenger_city = db.query(City).filter(
+                    City.id == booking.to_city_id
+                ).first()
+
+                distance_to_passenger = calculate_distance(
+                    lat, lon,
+                    passenger_city.latitude,
+                    passenger_city.longitude
+                )
+
+                eta_minutes = (distance_to_passenger / avg_speed_kmph) * 60
+
+                # Notify ONLY that passenger
+                if 0 < eta_minutes <= 10:
+                    await manage.send_to_user(booking.customer_id, {
+                        "event": "DROP_APPROACHING",
+                        "city_name": passenger_city.name,
+                        "eta_minutes": round(eta_minutes, 1)
+                    })
+
+                if distance_to_passenger < 0.3:
+                    booking.status = "COMPLETED"
+                    db.commit()
+
+                    await manage.send_to_user(booking.customer_id, {
+                        "event": "PASSENGER_DROPPED",
+                        "city_name": passenger_city.name
+                    })
+
+            # -------- ROUTE COMPLETE --------
+            remaining_stops = db.query(RouteStop).filter(
+                RouteStop.route_id == route.id,
+                RouteStop.is_reached == False
+            ).count()
+
+            if remaining_stops == 0:
+                route.status = "COMPLETED"
+                db.commit()
+
+                await manage.broadcast_route(route.id, {
+                    "event": "RIDE_COMPLETED"
+                })
+
+            # -------- LIVE UPDATE --------
+            await manage.broadcast_route(route.id, {
+                "event": "LIVE_LOCATION",
+                "latitude": lat,
+                "longitude": lon,
+                "route_status": route.status
             })
+
     except WebSocketDisconnect:
-        ConnectionManager.disconnect(route_id, websocket)
+        manage.disconnect_route(route_id, websocket)
+
     finally:
         db.close()
 
+
 # ws://localhost:8000/routes/ws/routes/1?token=YOUR_JWT
 @router.websocket("/ws/routes/{route_id}")
-async def customer_traking(websocket:WebSocket, route_id:int):
+async def customer_tracking(websocket: WebSocket, route_id: int):
 
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close()
         return
-    
+
     payload = verify_token(token)
     if not payload:
         await websocket.close()
         return
-    
+
     user_id = int(payload.get("sub"))
 
     db = SessionLocal()
 
     try:
         booking = db.query(Booking).filter(
-            Booking.route_id - route_id,
+            Booking.route_id == route_id,
             Booking.customer_id == user_id,
             Booking.status.in_(["CONFIRMED", "COMPLETED"])
         ).first()
 
-        route = db.query(Route).filter(
-            Route.id == route_id
-        ).first()
-
-        if not booking or not route or route.status != "STARTED":
+        if not booking:
             await websocket.close()
             return
-        
+
         await websocket.accept()
-        await ConnectionManager.connect(route_id, websocket)
+
+        await manage.connect_route(route_id, websocket)
+        await manage.connect_user(user_id, websocket)
 
         while True:
             await websocket.receive_text()
 
     except WebSocketDisconnect:
-        ConnectionManager.disconnect(route_id, websocket)
+        manage.disconnect_route(route_id, websocket)
+        manage.disconnect_user(user_id)
+
     finally:
         db.close()
+
