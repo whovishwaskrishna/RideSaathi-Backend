@@ -17,6 +17,7 @@ from app.schemas.route import RouteCreate
 from app.services.route_completion import auto_complete_route
 from app.models.route_live_location import RouteLiveLocation
 from app.utils.geo import calculate_distance
+from app.core.ws_manager import manage
 
 
 
@@ -265,8 +266,9 @@ def search_routes(
         "results": results
     }
 
+# ws://localhost:8000/notifications/ws?token=YOUR_JWT
 @router.put("/{router_id}/start")
-def start_route(
+async def start_route(
     route_id:int,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("DRIVER"))
@@ -289,6 +291,20 @@ def start_route(
     
     route.status = "STARTED"
     db.commit()
+
+    bookings = db.query(Booking).filter(
+        Booking.route_id == route.id,
+        Booking.status == "CONFIRMED"
+    ).all()
+
+    for booking in bookings:
+        await manage.send_to_user(
+            booking.customer_id,
+            {
+                "event": "RIDE_STARTED",
+                "message":"Your ride has started."
+            }
+        )
 
     return {"message":"Ride started"}
 

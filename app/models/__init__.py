@@ -7,3 +7,5 @@ from .route_stop import RouteStop
 from .booking import Booking
 from .reviews import Review
 from .route_live_location import RouteLiveLocation
+from .notification import Notification
+from .user_otp import UserOTP
