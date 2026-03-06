@@ -14,7 +14,7 @@ from app.core.email_service import send_email
 router = APIRouter(prefix="/driver", tags=["Driver"])
 
 @router.post("/register")
-def create_driver_profile(phone:str, vehicle_type:str,vehicle_number:str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_driver_profile(vehicle_type:str,vehicle_number:str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user.role != "DRIVER":
         raise HTTPException(status_code=403, detail="Only driver can create profile")
     
@@ -23,8 +23,7 @@ def create_driver_profile(phone:str, vehicle_type:str,vehicle_number:str, db: Se
         raise HTTPException(status_code=400, detail="Driver profile already exists")
     
     driver= Driver(
-        user_id=current_user.id,
-        phone=phone,
+        user_id=current_user.id,        
         vehicle_type=vehicle_type,
         vehicle_number=vehicle_number
     )

@@ -41,7 +41,7 @@ def create_route(route: RouteCreate, db: Session = Depends(get_db), current_user
         estimated_duration_minutes=route.estimated_duration_minutes,
         available_seats=route.available_seats,
         price_per_seat=route.price_per_seat,
-        status="ACTIVE"
+        status="SCHEDULED"
     )
 
     print("Departure time type:", type(route.departure_time))
